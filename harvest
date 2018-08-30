@@ -1,0 +1,84 @@
+#!/usr/bin/php
+<?php
+$error_msgs = new stdClass();
+$error_msgs->usage = "\e[4mUsage\e[0m: ./harvest <file.conf>" . PHP_EOL;
+$error_msgs->nofile = "\033[0;31mError\033[0m: Configuration file not found." . PHP_EOL;
+$error_msgs->conferror = "\033[0;31mError\033[0m: There is an error in conf file." . PHP_EOL;
+$error_msgs->filetype = "\033[0;31mError\033[0m: Filetype should be one of csv, json or geojson." . PHP_EOL;
+
+if (count($argv) != 2)
+	die($error_msgs->usage);
+if (!is_file($argv[1]))
+	die($error_msgs->nofile);
+
+require_once "Harvester.php";
+require_once "WebHarvester.php";
+require_once "DOMTools.php";
+require_once "CurlTools.php";
+require_once "LinksList.php";
+require_once "CKANapi.php";
+require_once "ApiHarvester.php";
+
+$settings = file_get_contents($argv[1]);
+$settings = preg_replace("#(/\*([^*]|[\r\n]|(\*+([^*/]|[\r\n])))*\*+/)|([\s\t]//.*)|(^//.*)#", '', $settings);
+if (!isJson($settings))
+	die($error_msgs->conferror);
+$args = json_decode($settings);
+define('MEMORY_LIMIT', -1);
+define("MAX_CON", (isset($args->max_connections) && is_int($args->max_connections)) ? max($args->max_connections, 2) : 5);
+
+$filetype = !empty($args->filename) ? substr($args->filename, strrpos($args->filename, ".") + 1) : '';
+if (array_search($filetype, ['csv', 'json', 'geojson']) === false || substr($args->filename, 0, 1) == "-")
+	die($error_msgs->filetype);
+$args->filetype = $filetype;
+
+switch ($args->type) {
+	case 'list':
+	case 'web':
+		if (!isAjax($args->url)) {
+			$list = new LinksList($args);
+			$data = $list->harvestLinks();
+		}
+		if ($args->type != 'list') {
+			$harvester = new WebHarvester($args);
+			echo "Collecting the list items...";
+			$data = $harvester->collect();
+			// var_dump($data);
+			echo " Ok." . PHP_EOL;
+			echo "Retrieving individual items...";
+			$indices = $harvester->fetchData($data);
+			echo " Done." . PHP_EOL;
+		}
+		break;
+
+	case 'ckan':
+		$harvester = new CKANapi($args);
+		if (empty($args->query) && empty($args->filter_query)) {
+			$names = $harvester->collect();
+			$packages = $harvester->packages($names);
+		} else {
+			$harvester->query();
+		}
+		break;
+
+	case 'api':
+		$harvester = new ApiHarvester($args);
+		$list = $harvester->collect();
+		$harvester->fetchData($list);
+		break;
+}
+
+// $executionTime = microtime(true) - $_SERVER["REQUEST_TIME_FLOAT"];
+// echo "Execution Time: " . $executionTime . "s" . PHP_EOL;
+
+exit();
+
+function isAjax($url) {
+	$curl = new CurlTools();
+	return isJson($curl->xmlConnect($url));
+}
+
+function isJson($string) {
+	json_decode($string);
+	return (json_last_error() == JSON_ERROR_NONE);
+}
